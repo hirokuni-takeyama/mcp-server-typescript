@@ -21,6 +21,7 @@ import { GooglePageIntersectionsTool } from './tools/google/competitor-research/
 import { DataForSeoLabsFilterTool } from './tools/labs-filters.tool.js';
 import { GoogleBulkTrafficEstimationTool } from './tools/google/competitor-research/google-bulk-traffic-estimation.tool.js';
 import { GoogleHistoricalKeywordDataTool } from './tools/google/keyword-research/google-historical-keyword-data.tool.js';
+import { GoogleRelevantPagesTool } from './tools/google/competitor-research/google-relevant-pages.js';
 import { datalabsPrompts } from './dataforseo-labs.prompts.js';
 
 export class DataForSEOLabsApi extends BaseModule {
@@ -50,6 +51,7 @@ export class DataForSEOLabsApi extends BaseModule {
       new GoogleBulkTrafficEstimationTool(this.dataForSEOClient),
       new DataForSeoLabsFilterTool(this.dataForSEOClient),
       new GoogleHistoricalKeywordDataTool(this.dataForSEOClient),
+      new GoogleRelevantPagesTool(this.dataForSEOClient),
       // Add more tools here
     ];
 
