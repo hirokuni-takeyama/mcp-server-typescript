@@ -23,7 +23,7 @@ import { initMcpServer } from "./init-mcp-server.js";
 // Initialize field configuration if provided
 initializeFieldConfiguration();
 
-// Extended request interface (元のまま残します)
+// Extended request interface to include auth properties
 interface Request extends ExpressRequest {
   username?: string;
   password?: string;
@@ -40,55 +40,82 @@ async function main() {
   const app = express();
   app.use(express.json());
 
-  // ===== Basic Auth Middleware（入場制御のみ） =====
-  const BASIC_USER = process.env.BASIC_AUTH_USER || "";
-  const BASIC_PASS = process.env.BASIC_AUTH_PASS || "";
-
+  // Basic Auth Middleware
   const basicAuth = (req: Request, res: Response, next: NextFunction) => {
-    // 環境変数が未設定なら認証スキップ（開発・一時公開用）
-    if (!BASIC_USER) return next();
-
-    const authHeader = req.headers.authorization || "";
-    if (!authHeader.startsWith('Basic ')) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="mcp"');
-      return res.status(401).send("Authentication required");
+    // Check for Authorization header
+    const authHeader = req.headers.authorization;
+    console.error(authHeader)
+    if (!authHeader || !authHeader.startsWith('Basic ')) {
+      next();
+      return;
     }
+
+    // Extract credentials
     const base64Credentials = authHeader.split(' ')[1];
     const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
-    const [user, pass] = credentials.split(':');
+    const [username, password] = credentials.split(':');
 
-    if (user === BASIC_USER && pass === BASIC_PASS) return next();
+    if (!username || !password) {
+      console.error('Invalid credentials');
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32001, 
+          message: "Invalid credentials"
+        },
+        id: null
+      });
+      return;
+    }
 
-    res.setHeader('WWW-Authenticate', 'Basic realm="mcp"');
-    return res.status(401).send("Invalid credentials");
+    // Add credentials to request
+    req.username = username;
+    req.password = password;
+    next();
   };
 
-  // ===== MCP リクエストハンドラ =====
   const handleMcpRequest = async (req: Request, res: Response) => {
-    // リクエスト毎に独立インスタンスで処理（元実装の方針を維持）
+    // In stateless mode, create a new instance of transport and server for each request
+    // to ensure complete isolation. A single instance would cause request ID collisions
+    // when multiple clients connect concurrently.
+    
     try {
-      // DataForSEO の資格情報は常に環境変数から取得（リクエストのBasicは使わない）
-      const envUsername = process.env.DATAFORSEO_USERNAME;
-      const envPassword = process.env.DATAFORSEO_PASSWORD;
-      if (!envUsername || !envPassword) {
-        console.error('No DataForSEO credentials provided in environment');
-        return res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32001, message: "Server is not configured with DATAFORSEO credentials." },
-          id: null
-        });
+      
+      // Check if we have valid credentials
+      if (!req.username && !req.password) {
+        // If no request auth, check environment variables
+        const envUsername = process.env.DATAFORSEO_USERNAME;
+        const envPassword = process.env.DATAFORSEO_PASSWORD;
+        if (!envUsername || !envPassword) {
+          console.error('No DataForSEO credentials provided');
+          res.status(401).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32001,
+              message: "Authentication required. Provide DataForSEO credentials."
+            },
+            id: null
+          });
+          return;
+        }
+        // Use environment variables
+        req.username = envUsername;
+        req.password = envPassword;
       }
-
-      const server = initMcpServer(envUsername, envPassword);
+      
+      const server = initMcpServer(req.username, req.password); 
+      console.error(Date.now().toLocaleString())
 
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined
       });
 
       await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-
+      console.error('handle request');
+      await transport.handleRequest(req , res, req.body);
+      console.error('end handle request');
       req.on('close', () => {
+        console.error('Request closed');
         transport.close();
         server.close();
       });
@@ -98,7 +125,10 @@ async function main() {
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
-          error: { code: -32603, message: 'Internal server error' },
+          error: {
+            code: -32603,
+            message: 'Internal server error',
+          },
           id: null,
         });
       }
@@ -109,23 +139,23 @@ async function main() {
     console.error(`Received ${method} request`);
     res.status(405).json({
       jsonrpc: "2.0",
-      error: { code: -32000, message: "Method not allowed." },
+      error: {
+        code: -32000,
+        message: "Method not allowed."
+      },
       id: null
     });
   };
 
   // Apply basic auth and shared handler to both endpoints
   app.post('/http', basicAuth, handleMcpRequest);
-  app.post('/mcp',  basicAuth, handleMcpRequest);
+  app.post('/mcp', basicAuth, handleMcpRequest);
 
   app.get('/http', handleNotAllowed('GET HTTP'));
-  app.get('/mcp',  handleNotAllowed('GET MCP'));
+  app.get('/mcp', handleNotAllowed('GET MCP'));
 
   app.delete('/http', handleNotAllowed('DELETE HTTP'));
-  app.delete('/mcp',  handleNotAllowed('DELETE MCP'));
-
-  // （任意）/health を追加しておくと監視が楽
-  app.get('/health', (_req, res) => res.status(200).send('OK'));
+  app.delete('/mcp', handleNotAllowed('DELETE MCP'));
 
   // Start the server
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
